@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TERMINAL | Encrypted Dead Drop</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #121212;
+            color: #44b1d6;
+            padding: 20px;
+        }
+
+        input, textarea {
+            display: block;
+            margin: 10px 0;
+            width: 300px;
+            padding: 5px;
+        }
+
+        button {
+            cursor: pointer;
+            padding: 10px;
+            background: #44b1d6;
+            border: none;
+            font-weight: bold;
+        }
+
+        .result {
+            margin-top: 10px;
+            color: yellow;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔐 ENCRYPTED DEAD DROP</h1>
+
+    <h3>[1] INITIALIZE DROP</h3>
+    <textarea id="msgInput" placeholder="Enter Secret Message"></textarea>
+    <input type="password" id="pwCreate" placeholder="Create Access Key">
+    <button onclick="createDrop()">DEPLOY DROP</button>
+    <div id="dropStatus" class="result"></div>
+
+    <hr>
+
+    <h3>[2] RETRIEVE DROP</h3>
+    <input type="text" id="idInput" placeholder="Enter Drop ID">
+    <input type="password" id="pwRetrieve" placeholder="Enter Access Key">
+    <button onclick="retrieveDrop()">DECRYPT & DESTROY</button>
+    <div id="retStatus" class="result"></div>
+
+    <script>
+        async function createDrop() {
+            const res = await fetch('/create-drop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: document.getElementById('msgInput').value,
+                    password: document.getElementById('pwCreate').value
+                })
+            });
+            const data = await res.json();
+            document.getElementById('dropStatus').innerText = data.dropId ? `SUCCESS. DROP_ID: ${data.dropId}` : "ERROR";
+        }
+
+        async function retrieveDrop() {
+            const res = await fetch('/retrieve-drop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    drop_id: document.getElementById('idInput').value,
+                    password: document.getElementById('pwRetrieve').value
+                })
+            });
+            const data = await res.json();
+            document.getElementById('retStatus').innerText = data.message || `FAILED: ${data.error}`;
+        }
+    </script>
+</body>
+</html>
