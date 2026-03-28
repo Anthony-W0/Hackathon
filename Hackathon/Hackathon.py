@@ -17,6 +17,8 @@ from flask import Flask, render_template, request, send_file, flash, redirect, u
 import os
 import io
 import tempfile
+import secrets
+import uuid
 from werkzeug.utils import secure_filename
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -24,7 +26,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 # SECURITY: Change this secret key for production!
@@ -36,6 +38,9 @@ KEYS_FOLDER = 'keys'
 # WARNING: In-memory storage - will reset on server restart!
 # For production, use a database instead
 dead_drops = {}
+
+# File sharing links (new feature)
+share_links = {}  # {token: {file_info, expiry}}
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(KEYS_FOLDER, exist_ok=True)
@@ -138,11 +143,29 @@ def upload_file():
         # ENCRYPTION LOGIC - The core feature!
         try:
             metadata = encrypt_file(filepath)
+            
+            # Generate shareable link
+            share_token = secrets.token_urlsafe(32)
+            share_links[share_token] = {
+                'encrypted_file': metadata['encrypted_name'],
+                'original_name': metadata['original_name'],
+                'created': datetime.now(),
+                'expires': datetime.now() + timedelta(days=7),  # Expires in 7 days
+                'downloads': 0,
+                'max_downloads': 100  # Max 100 downloads
+            }
+            
+            # Create shareable URL (works with localhost or deployed)
+            base_url = request.url_root.rstrip('/')
+            share_url = f"{base_url}/share/{share_token}"
+            
             return render_template('success.html', 
                                  filename=metadata['encrypted_name'],
                                  original_name=metadata['original_name'],
                                  encrypted=True,
-                                 size=metadata['size'])
+                                 size=metadata['size'],
+                                 share_url=share_url,
+                                 share_token=share_token)
         except Exception as e:
             flash(f'Encryption failed: {str(e)}')
             return redirect(url_for('index'))
@@ -230,6 +253,75 @@ def download_file(filename):
         flash(f'Download failed: {str(e)}')
         return redirect(url_for('list_files'))
 
+@app.route('/share/<token>')
+def share_download(token):
+    """Download file via shareable link"""
+    try:
+        # Check if token exists and is valid
+        if token not in share_links:
+            return render_template('share_error.html', 
+                                 error="Link not found or expired"), 404
+        
+        share_info = share_links[token]
+        
+        # Check if link has expired
+        if datetime.now() > share_info['expires']:
+            del share_links[token]  # Clean up expired link
+            return render_template('share_error.html', 
+                                 error="Link has expired"), 410
+        
+        # Check download limit
+        if share_info['downloads'] >= share_info['max_downloads']:
+            return render_template('share_error.html', 
+                                 error="Download limit reached"), 410
+        
+        # Increment download counter
+        share_info['downloads'] += 1
+        
+        # Get the encrypted file
+        encrypted_filename = share_info['encrypted_file']
+        encrypted_path = os.path.join(app.config['UPLOAD_FOLDER'], encrypted_filename)
+        
+        if not os.path.exists(encrypted_path):
+            return render_template('share_error.html', 
+                                 error="File no longer available"), 404
+        
+        # Load metadata
+        base_path = encrypted_path.replace('.enc', '')
+        metadata_path = base_path + '.meta'
+        
+        with open(metadata_path, 'r') as meta_file:
+            metadata = json.load(meta_file)
+        
+        # Decrypt and serve file (same logic as regular download)
+        password = "DEFAULT_DEAD_DROP_KEY"
+        salt = base64.b64decode(metadata['salt'].encode())
+        
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+        fernet = Fernet(key)
+        
+        with open(encrypted_path, 'rb') as encrypted_file:
+            encrypted_data = encrypted_file.read()
+        
+        decrypted_data = fernet.decrypt(encrypted_data)
+        file_stream = io.BytesIO(decrypted_data)
+        file_stream.seek(0)
+        
+        return send_file(file_stream, 
+                        as_attachment=True, 
+                        download_name=share_info['original_name'],
+                        mimetype='application/octet-stream')
+                        
+    except Exception as e:
+        return render_template('share_error.html', 
+                             error=f"Download failed: {str(e)}"), 500
+
 # Friend's Message-Based Dead Drop Routes
 @app.route('/create-drop', methods=['POST'])
 def create_drop():
@@ -269,6 +361,39 @@ def retrieve_drop():
 def message_interface():
     """Interface for message-based dead drops"""
     return render_template('messages.html')
+
+@app.route('/share-status')
+def share_status():
+    """Show active share links and their status"""
+    active_links = []
+    current_time = datetime.now()
+    
+    # Clean up expired links and collect active ones
+    expired_tokens = []
+    for token, info in share_links.items():
+        if current_time > info['expires']:
+            expired_tokens.append(token)
+        else:
+            # Calculate time remaining
+            time_remaining = info['expires'] - current_time
+            days_left = time_remaining.days
+            hours_left = time_remaining.seconds // 3600
+            
+            active_links.append({
+                'token': token[:8] + '...', # Show first 8 chars for privacy
+                'original_name': info['original_name'],
+                'created': info['created'].strftime('%Y-%m-%d %H:%M'),
+                'downloads': info['downloads'],
+                'max_downloads': info['max_downloads'],
+                'days_left': days_left,
+                'hours_left': hours_left
+            })
+    
+    # Remove expired links
+    for token in expired_tokens:
+        del share_links[token]
+    
+    return render_template('share_status.html', links=active_links)
 
 if __name__ == '__main__':
     # Development mode - change for production!
