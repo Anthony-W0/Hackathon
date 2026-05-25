@@ -404,4 +404,4 @@ if __name__ == '__main__':
     app.run(debug=debug_mode, port=port, host=host)
 
     
-
+// TODO: Implement additional encryption validation and secure message handling
